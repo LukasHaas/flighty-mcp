@@ -141,6 +141,48 @@ def get_flight_stats(year: int | None = None) -> dict:
 
 
 @mcp.tool()
+def add_flight(
+    flight_code: str,
+    date: str,
+    departure_airport: str | None = None,
+    arrival_airport: str | None = None,
+    departure_time: str | None = None,
+    arrival_time: str | None = None,
+    seat_number: str | None = None,
+    cabin_class: str | None = None,
+    booking_reference: str | None = None,
+) -> dict:
+    """Add a flight to Flighty by flight code and date.
+
+    The airline is automatically detected from the flight code prefix.
+    If departure/arrival airports are not provided and AIRLABS_API_KEY is set,
+    they are automatically looked up via the AirLabs API.
+
+    Args:
+        flight_code: Flight code (e.g. "UA194", "BA930", "LH400").
+        date: Departure date in YYYY-MM-DD format (e.g. "2026-04-15").
+        departure_airport: Departure airport IATA code (e.g. "SFO"). Auto-looked up if omitted.
+        arrival_airport: Arrival airport IATA code (e.g. "LHR"). Auto-looked up if omitted.
+        departure_time: Optional departure time in HH:MM 24h format, local time (e.g. "14:30"). Defaults to midnight.
+        arrival_time: Optional arrival time in HH:MM 24h format, local time (e.g. "22:15"). Defaults to 3h after departure.
+        seat_number: Optional seat number (e.g. "12A").
+        cabin_class: Optional cabin class (e.g. "economy", "business", "first").
+        booking_reference: Optional PNR/booking reference code.
+    """
+    return flighty.add_flight(
+        flight_code=flight_code,
+        date=date,
+        departure_airport=departure_airport,
+        arrival_airport=arrival_airport,
+        departure_time=departure_time,
+        arrival_time=arrival_time,
+        seat_number=seat_number,
+        cabin_class=cabin_class,
+        booking_reference=booking_reference,
+    )
+
+
+@mcp.tool()
 def get_connections() -> list[dict]:
     """Get flight connections (layovers) showing connecting flights and layover duration."""
     return flighty.get_connections()

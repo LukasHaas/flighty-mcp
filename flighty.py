@@ -1,7 +1,11 @@
 """Business logic for querying the Flighty local SQLite database."""
 
+import json
 import os
+import re
 import sqlite3
+import urllib.request
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,15 +14,17 @@ DEFAULT_DB_PATH = os.path.expanduser(
 )
 
 DB_PATH = os.environ.get("FLIGHTY_DB_PATH", DEFAULT_DB_PATH)
+AIRLABS_API_KEY = os.environ.get("AIRLABS_API_KEY", "")
 
 
-def _get_db() -> sqlite3.Connection:
+def _get_db(readonly: bool = True) -> sqlite3.Connection:
     if not os.path.exists(DB_PATH):
         raise FileNotFoundError(
             f"Flighty database not found at {DB_PATH}. "
             "Make sure the Flighty app is installed."
         )
-    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    mode = "ro" if readonly else "rw"
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode={mode}", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -446,6 +452,214 @@ def get_flight_stats(year: int | None = None) -> dict[str, Any]:
     stats["year"] = year or "all_time"
 
     return stats
+
+
+def _parse_flight_number(flight_code: str) -> tuple[str, str]:
+    """Parse a flight code like 'UA194' into (airline_iata, number).
+
+    Handles formats: 'UA194', 'UA 194', 'UA-194'.
+    """
+    code = flight_code.strip().upper().replace("-", "").replace(" ", "")
+    m = re.match(r"^([A-Z]{2}|\d[A-Z]|[A-Z]\d)(\d+)$", code)
+    if not m:
+        raise ValueError(
+            f"Invalid flight code '{flight_code}'. "
+            "Expected format like 'UA194' or 'BA930'."
+        )
+    return m.group(1), code
+
+
+def _lookup_airline(conn: sqlite3.Connection, iata: str) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT id, name, iata FROM Airline WHERE UPPER(iata) = ? AND deleted IS NULL LIMIT 1",
+        [iata.upper()],
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Airline with IATA code '{iata}' not found in Flighty database.")
+    return dict(row)
+
+
+def _lookup_airport(conn: sqlite3.Connection, code: str) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT id, iata, name FROM Airport WHERE UPPER(iata) = ? AND deleted IS NULL LIMIT 1",
+        [code.upper()],
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Airport with IATA code '{code}' not found in Flighty database.")
+    return dict(row)
+
+
+def _get_user_id(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT DISTINCT userId FROM UserFlight WHERE isMyFlight = 1 LIMIT 1"
+    ).fetchone()
+    if not row:
+        raise RuntimeError("Could not determine Flighty user ID.")
+    return row[0]
+
+
+def _lookup_flight_route(flight_iata: str) -> dict[str, str] | None:
+    """Look up flight route info from AirLabs API.
+
+    Returns dict with dep_iata, arr_iata, dep_time, arr_time or None on failure.
+    """
+    if not AIRLABS_API_KEY:
+        return None
+    try:
+        url = f"https://airlabs.co/api/v9/flight?flight_iata={flight_iata}&api_key={AIRLABS_API_KEY}"
+        req = urllib.request.Request(url, headers={"User-Agent": "flighty-mcp/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        r = data.get("response")
+        if r and r.get("dep_iata") and r.get("arr_iata"):
+            return {
+                "dep_iata": r["dep_iata"],
+                "arr_iata": r["arr_iata"],
+                "dep_time": r.get("dep_time"),
+                "arr_time": r.get("arr_time"),
+            }
+    except Exception:
+        pass
+    return None
+
+
+def add_flight(
+    flight_code: str,
+    date: str,
+    departure_airport: str | None = None,
+    arrival_airport: str | None = None,
+    departure_time: str | None = None,
+    arrival_time: str | None = None,
+    seat_number: str | None = None,
+    cabin_class: str | None = None,
+    booking_reference: str | None = None,
+) -> dict[str, Any]:
+    """Add a flight to the Flighty database.
+
+    Args:
+        flight_code: Flight code (e.g. 'UA194', 'BA930').
+        date: Departure date in YYYY-MM-DD format.
+        departure_airport: Departure airport IATA code (e.g. 'SFO'). If omitted, looked up via AirLabs API.
+        arrival_airport: Arrival airport IATA code (e.g. 'LHR'). If omitted, looked up via AirLabs API.
+        departure_time: Optional departure time in HH:MM format (24h, local time). Defaults to '00:00'.
+        arrival_time: Optional arrival time in HH:MM format (24h, local time). Defaults to departure + 3h.
+        seat_number: Optional seat number (e.g. '12A').
+        cabin_class: Optional cabin class (e.g. 'economy', 'business', 'first').
+        booking_reference: Optional PNR/booking reference.
+
+    Returns:
+        A dictionary with the created flight details.
+    """
+    airline_iata, flight_number = _parse_flight_number(flight_code)
+
+    # If airports not provided, try AirLabs API lookup
+    if not departure_airport or not arrival_airport:
+        route = _lookup_flight_route(flight_number)
+        if route:
+            departure_airport = departure_airport or route["dep_iata"]
+            arrival_airport = arrival_airport or route["arr_iata"]
+            if not departure_time and route.get("dep_time"):
+                # dep_time format: "2021-07-14 19:53"
+                try:
+                    departure_time = route["dep_time"].split(" ")[1][:5]
+                except (IndexError, TypeError):
+                    pass
+            if not arrival_time and route.get("arr_time"):
+                try:
+                    arrival_time = route["arr_time"].split(" ")[1][:5]
+                except (IndexError, TypeError):
+                    pass
+        if not departure_airport or not arrival_airport:
+            raise ValueError(
+                "Could not determine airports. Provide departure_airport and arrival_airport, "
+                "or set the AIRLABS_API_KEY environment variable for automatic lookup."
+            )
+
+    conn = _get_db(readonly=False)
+    try:
+        airline = _lookup_airline(conn, airline_iata)
+        dep_airport = _lookup_airport(conn, departure_airport)
+        arr_airport = _lookup_airport(conn, arrival_airport)
+        user_id = _get_user_id(conn)
+
+        # Parse departure datetime
+        dep_time = departure_time or "00:00"
+        dep_dt = datetime.fromisoformat(f"{date}T{dep_time}:00")
+        dep_ts = int(dep_dt.timestamp())
+
+        # Parse or estimate arrival datetime
+        if arrival_time:
+            arr_dt = datetime.fromisoformat(f"{date}T{arrival_time}:00")
+            # If arrival is before departure, assume next day
+            if arr_dt <= dep_dt:
+                from datetime import timedelta
+                arr_dt += timedelta(days=1)
+            arr_ts = int(arr_dt.timestamp())
+        else:
+            arr_ts = dep_ts + 3 * 3600  # default: 3 hours later
+
+        now_ts = int(datetime.now(timezone.utc).timestamp())
+        flight_id = str(uuid.uuid4())
+
+        # Insert Flight row
+        conn.execute(
+            """
+            INSERT INTO Flight (
+                id, number, departureAirportId, scheduledArrivalAirportId,
+                actualArrivalAirportId, airlineId, isCancelled, hasOfficialData,
+                distance, lastKnownDepartureDate, lastKnownArrivalDate,
+                departureScheduleGateOriginal, arrivalScheduleGateOriginal,
+                created, lastUpdated
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, '0', 0, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                flight_id, flight_number, dep_airport["id"], arr_airport["id"],
+                arr_airport["id"], airline["id"],
+                dep_ts, arr_ts, dep_ts, arr_ts,
+                now_ts, now_ts,
+            ],
+        )
+
+        # Insert UserFlight row
+        conn.execute(
+            """
+            INSERT INTO UserFlight (
+                userId, flightId, isRandom, isProUpgrade, isMyFlight,
+                isArchived, importSource, lastUpdated, created
+            ) VALUES (?, ?, 0, 0, 1, 0, 'MCP', ?, ?)
+            """,
+            [user_id, flight_id, now_ts, now_ts],
+        )
+
+        # Optionally insert Ticket row
+        if seat_number or cabin_class or booking_reference:
+            conn.execute(
+                """
+                INSERT INTO Ticket (
+                    userId, flightId, seatNumber, seatPosition, cabinClass,
+                    pnr, lastUpdated
+                ) VALUES (?, ?, ?, NULL, ?, ?, ?)
+                """,
+                [user_id, flight_id, seat_number, cabin_class, booking_reference, now_ts],
+            )
+
+        conn.commit()
+
+        return {
+            "flight_id": flight_id,
+            "flight_number": flight_number,
+            "airline": airline["name"],
+            "departure_airport": dep_airport["iata"],
+            "arrival_airport": arr_airport["iata"],
+            "departure_time": _ts_to_iso(dep_ts),
+            "arrival_time": _ts_to_iso(arr_ts),
+            "seat_number": seat_number,
+            "cabin_class": cabin_class,
+            "booking_reference": booking_reference,
+            "status": "created",
+        }
+    finally:
+        conn.close()
 
 
 def get_connections() -> list[dict[str, Any]]:
