@@ -15,7 +15,7 @@ def list_flights(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict]:
-    """List your flights from Flighty.
+    """List your own flights from Flighty (excludes friends' flights).
 
     Args:
         upcoming_only: Only show flights that haven't departed yet.
@@ -28,6 +28,32 @@ def list_flights(
         upcoming_only=upcoming_only,
         past_only=past_only,
         include_archived=include_archived,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@mcp.tool()
+def list_friend_flights(
+    friend_name: str | None = None,
+    upcoming_only: bool = False,
+    past_only: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """List flights from your connected friends in Flighty.
+
+    Args:
+        friend_name: Optional filter by friend's name (partial match).
+        upcoming_only: Only show flights that haven't departed yet.
+        past_only: Only show flights that have already departed.
+        limit: Maximum number of flights to return (default 50).
+        offset: Number of flights to skip for pagination.
+    """
+    return flighty.list_friend_flights(
+        friend_name=friend_name,
+        upcoming_only=upcoming_only,
+        past_only=past_only,
         limit=limit,
         offset=offset,
     )

@@ -145,10 +145,11 @@ def list_flights(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    """List the user's flights with optional filtering."""
+    """List the owner's own flights (excludes friends' flights)."""
     conn = _get_db()
-    query = _FLIGHT_BASE_QUERY
-    params: list[Any] = []
+    owner_id = _get_owner_user_id(conn)
+    query = _FLIGHT_BASE_QUERY + " AND uf.userId = ?"
+    params: list[Any] = [owner_id]
 
     if not include_archived:
         query += " AND uf.isArchived = 0"
@@ -160,6 +161,51 @@ def list_flights(
     elif past_only:
         query += " AND f.departureScheduleGateOriginal < ?"
         params.append(now)
+
+    query += " ORDER BY f.departureScheduleGateOriginal DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [_build_flight_dict(r) for r in rows]
+
+
+def list_friend_flights(
+    friend_name: str | None = None,
+    upcoming_only: bool = False,
+    past_only: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List flights belonging to connected friends (excludes the owner's flights)."""
+    conn = _get_db()
+    owner_id = _get_owner_user_id(conn)
+
+    query = _FLIGHT_BASE_QUERY.replace(
+        "LEFT JOIN Ticket t ON f.id = t.flightId AND uf.userId = t.userId",
+        "LEFT JOIN Ticket t ON f.id = t.flightId AND uf.userId = t.userId\n"
+        "LEFT JOIN Profile p ON uf.userId = p.userId",
+    )
+    query += " AND uf.userId != ?"
+    params: list[Any] = [owner_id]
+
+    if friend_name:
+        query += " AND (UPPER(p.fullName) LIKE UPPER(?) OR UPPER(p.firstName) LIKE UPPER(?))"
+        params.extend([f"%{friend_name}%", f"%{friend_name}%"])
+
+    now = int(datetime.now(timezone.utc).timestamp())
+    if upcoming_only:
+        query += " AND f.departureScheduleGateOriginal >= ?"
+        params.append(now)
+    elif past_only:
+        query += " AND f.departureScheduleGateOriginal < ?"
+        params.append(now)
+
+    # Add friend name to output
+    query = query.replace(
+        "SELECT\n    f.id,",
+        "SELECT\n    p.fullName AS friend_name,\n    f.id,",
+    )
 
     query += " ORDER BY f.departureScheduleGateOriginal DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
@@ -489,9 +535,28 @@ def _lookup_airport(conn: sqlite3.Connection, code: str) -> dict[str, Any]:
     return dict(row)
 
 
-def _get_user_id(conn: sqlite3.Connection) -> str:
+def _get_owner_user_id(conn: sqlite3.Connection) -> str:
+    """Get the local Flighty owner's user ID.
+
+    The owner appears in ConnectedFriendRelationship as both sender and receiver
+    more than any other user, but may not have a Profile entry with a name.
+    Fallback: the userId with the most UserFlight rows.
+    """
     row = conn.execute(
-        "SELECT DISTINCT userId FROM UserFlight WHERE isMyFlight = 1 LIMIT 1"
+        """
+        SELECT userId, COUNT(*) as cnt FROM (
+            SELECT senderUserId AS userId FROM ConnectedFriendRelationship WHERE deleted IS NULL
+            UNION ALL
+            SELECT receiverUserId AS userId FROM ConnectedFriendRelationship WHERE deleted IS NULL
+        )
+        GROUP BY userId ORDER BY cnt DESC LIMIT 1
+        """
+    ).fetchone()
+    if row:
+        return row[0]
+    # Fallback: user with the most flights
+    row = conn.execute(
+        "SELECT userId, COUNT(*) as cnt FROM UserFlight WHERE deleted IS NULL GROUP BY userId ORDER BY cnt DESC LIMIT 1"
     ).fetchone()
     if not row:
         raise RuntimeError("Could not determine Flighty user ID.")
@@ -580,7 +645,7 @@ def add_flight(
         airline = _lookup_airline(conn, airline_iata)
         dep_airport = _lookup_airport(conn, departure_airport)
         arr_airport = _lookup_airport(conn, arrival_airport)
-        user_id = _get_user_id(conn)
+        user_id = _get_owner_user_id(conn)
 
         # Parse departure datetime
         dep_time = departure_time or "00:00"
