@@ -4,7 +4,8 @@ A local MCP (Model Context Protocol) server that gives AI assistants access to y
 
 ## Features
 
-- **List flights** - View upcoming, past, or all flights with pagination
+- **List your flights** - View your own upcoming, past, or all flights
+- **List friends' flights** - View connected friends' flights, filterable by name
 - **Get flight details** - Look up any flight by number or ID
 - **Search flights** - Filter by airline, airport, date range
 - **Flight status** - Check current status, delays, gates, weather
@@ -100,7 +101,8 @@ Override with the `FLIGHTY_DB_PATH` environment variable if needed.
 
 | Tool | Description |
 |------|-------------|
-| `list_flights` | List flights with filters (upcoming/past/archived) |
+| `list_flights` | List your own flights with filters (upcoming/past/archived) |
+| `list_friend_flights` | List connected friends' flights, optionally filtered by name |
 | `get_flight` | Get detailed flight info by ID or flight number |
 | `search_flights` | Search by airline, airports, date range |
 | `get_flight_status` | Current status, delays, gates, weather |
@@ -114,6 +116,7 @@ Override with the `FLIGHTY_DB_PATH` environment variable if needed.
 ## Example Queries
 
 - "What are my upcoming flights?"
+- "What flights does Felix have coming up?"
 - "How often is UA194 delayed?"
 - "Add flight LH400 on 2026-04-15"
 - "Show my flight stats for 2025"
