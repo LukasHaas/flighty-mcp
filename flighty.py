@@ -582,10 +582,31 @@ def _airport_timezone(airport: dict[str, Any]) -> tzinfo:
 def _get_owner_user_id(conn: sqlite3.Connection) -> str:
     """Get the local Flighty owner's user ID.
 
-    The owner appears in ConnectedFriendRelationship as both sender and receiver
-    more than any other user, but may not have a Profile entry with a name.
-    Fallback: the userId with the most UserFlight rows.
+    FriendPushSetting rows are the owner's own notification preferences, so
+    their userId is the local account. Failing that, the owner is the user
+    whose flights arrived by a non-CONNECTED_FRIEND import source (friends'
+    flights always sync in as CONNECTED_FRIEND). The relationship-count
+    heuristic ties 50/50 with exactly one mutual friend, so it is only a
+    last resort before the most-flights fallback.
     """
+    row = conn.execute(
+        """
+        SELECT userId, COUNT(*) as cnt FROM FriendPushSetting
+        GROUP BY userId ORDER BY cnt DESC LIMIT 1
+        """
+    ).fetchone()
+    if row:
+        return row[0]
+    row = conn.execute(
+        """
+        SELECT userId, COUNT(*) as cnt FROM UserFlight
+        WHERE deleted IS NULL
+          AND (importSource IS NULL OR importSource != 'CONNECTED_FRIEND')
+        GROUP BY userId ORDER BY cnt DESC LIMIT 1
+        """
+    ).fetchone()
+    if row:
+        return row[0]
     row = conn.execute(
         """
         SELECT userId, COUNT(*) as cnt FROM (
