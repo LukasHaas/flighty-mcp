@@ -181,8 +181,7 @@ SELECT
     t.cabinClass AS cabin_class,
     t.pnr AS booking_reference,
     t.flightReason AS flight_reason,
-    uf.isArchived AS is_archived,
-    uf.importSource AS import_source
+    uf.isArchived AS is_archived
 FROM Flight f
 JOIN Airport dep ON f.departureAirportId = dep.id
 JOIN Airport arr ON f.scheduledArrivalAirportId = arr.id
@@ -217,7 +216,7 @@ def list_flights(
         query += " AND f.departureScheduleGateOriginal < ?"
         params.append(now)
 
-    query += " ORDER BY f.departureScheduleGateOriginal DESC LIMIT ? OFFSET ?"
+    query += " ORDER BY f.departureScheduleGateOriginal ASC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
 
     rows = conn.execute(query, params).fetchall()
@@ -262,7 +261,7 @@ def list_friend_flights(
         "SELECT\n    p.fullName AS friend_name,\n    f.id,",
     )
 
-    query += " ORDER BY f.departureScheduleGateOriginal DESC LIMIT ? OFFSET ?"
+    query += " ORDER BY f.departureScheduleGateOriginal ASC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
 
     rows = conn.execute(query, params).fetchall()
@@ -321,7 +320,7 @@ def search_flights(
         query += " AND f.departureScheduleGateOriginal <= ?"
         params.append(ts)
 
-    query += " ORDER BY f.departureScheduleGateOriginal DESC LIMIT ?"
+    query += " ORDER BY f.departureScheduleGateOriginal ASC LIMIT ?"
     params.append(limit)
 
     rows = conn.execute(query, params).fetchall()
@@ -376,6 +375,8 @@ def get_flight_status(flight_number: str) -> dict[str, Any] | None:
         "is_cancelled": flight["is_cancelled"],
         "departure_airport": flight["departure_airport_iata"],
         "arrival_airport": flight["arrival_airport_iata"],
+        "departure_timezone": flight.get("departure_timezone"),
+        "arrival_timezone": flight.get("arrival_timezone"),
         "scheduled_departure": dep_orig,
         "estimated_departure": dep_est,
         "actual_departure": flight.get("departureScheduleGateActual"),
@@ -797,9 +798,12 @@ def add_flight(
         return {
             "flight_id": flight_id,
             "flight_number": flight_number,
+            "flight_code": f"{airline['iata']}{flight_number}",
             "airline": airline["name"],
             "departure_airport": dep_airport["iata"],
             "arrival_airport": arr_airport["iata"],
+            "departure_timezone": dep_airport.get("timeZoneIdentifier"),
+            "arrival_timezone": arr_airport.get("timeZoneIdentifier"),
             "departure_time": _ts_to_iso(dep_ts),
             "arrival_time": _ts_to_iso(arr_ts),
             "seat_number": seat_number,
@@ -835,7 +839,7 @@ def get_connections() -> list[dict[str, Any]]:
         JOIN Airport arr2 ON f2.scheduledArrivalAirportId = arr2.id
         JOIN Airport wait ON c.waitingAirportId = wait.id
         WHERE c.deleted IS NULL
-        ORDER BY f1.departureScheduleGateOriginal DESC
+        ORDER BY f1.departureScheduleGateOriginal ASC
         """,
     ).fetchall()
     conn.close()
