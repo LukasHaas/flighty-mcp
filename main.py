@@ -3,6 +3,7 @@
 from mcp.server.fastmcp import FastMCP
 
 import flighty
+import formatting
 
 mcp = FastMCP("flighty")
 
@@ -14,8 +15,10 @@ def list_flights(
     include_archived: bool = False,
     limit: int = 50,
     offset: int = 0,
-) -> list[dict]:
+) -> str:
     """List your own flights from Flighty (excludes friends' flights).
+
+    Flights are sorted chronologically (earliest departure first).
 
     Args:
         upcoming_only: Only show flights that haven't departed yet.
@@ -24,13 +27,14 @@ def list_flights(
         limit: Maximum number of flights to return (default 50).
         offset: Number of flights to skip for pagination.
     """
-    return flighty.list_flights(
+    flights = flighty.list_flights(
         upcoming_only=upcoming_only,
         past_only=past_only,
         include_archived=include_archived,
         limit=limit,
         offset=offset,
     )
+    return formatting.format_flight_list(flights)
 
 
 @mcp.tool()
@@ -40,8 +44,10 @@ def list_friend_flights(
     past_only: bool = False,
     limit: int = 50,
     offset: int = 0,
-) -> list[dict]:
+) -> str:
     """List flights from your connected friends in Flighty.
+
+    Flights are sorted chronologically (earliest departure first).
 
     Args:
         friend_name: Optional filter by friend's name (partial match).
@@ -50,20 +56,21 @@ def list_friend_flights(
         limit: Maximum number of flights to return (default 50).
         offset: Number of flights to skip for pagination.
     """
-    return flighty.list_friend_flights(
+    flights = flighty.list_friend_flights(
         friend_name=friend_name,
         upcoming_only=upcoming_only,
         past_only=past_only,
         limit=limit,
         offset=offset,
     )
+    return formatting.format_flight_list(flights, empty_message="No friend flights found.")
 
 
 @mcp.tool()
 def get_flight(
     flight_id: str | None = None,
     flight_number: str | None = None,
-) -> dict | None:
+) -> str:
     """Get detailed information about a specific flight.
 
     Provide either flight_id (internal ID) or flight_number (e.g. "UA194", "BA930").
@@ -73,7 +80,8 @@ def get_flight(
         flight_id: The internal Flighty flight ID.
         flight_number: The flight number (e.g. "UA194").
     """
-    return flighty.get_flight(flight_id=flight_id, flight_number=flight_number)
+    flight = flighty.get_flight(flight_id=flight_id, flight_number=flight_number)
+    return formatting.format_flight_details(flight)
 
 
 @mcp.tool()
@@ -84,8 +92,10 @@ def search_flights(
     after: str | None = None,
     before: str | None = None,
     limit: int = 50,
-) -> list[dict]:
+) -> str:
     """Search flights by airline, airports, or date range.
+
+    Results are sorted chronologically (earliest departure first).
 
     Args:
         airline: Filter by airline IATA code or name (e.g. "UA" or "United").
@@ -95,7 +105,7 @@ def search_flights(
         before: Only flights departing before this ISO date (e.g. "2025-12-31").
         limit: Maximum number of results (default 50).
     """
-    return flighty.search_flights(
+    flights = flighty.search_flights(
         airline=airline,
         departure_airport=departure_airport,
         arrival_airport=arrival_airport,
@@ -103,10 +113,11 @@ def search_flights(
         before=before,
         limit=limit,
     )
+    return formatting.format_flight_list(flights, empty_message="No flights matched your search.")
 
 
 @mcp.tool()
-def get_flight_status(flight_number: str) -> dict | None:
+def get_flight_status(flight_number: str) -> str:
     """Get the current status and delay information for a flight.
 
     Returns status (scheduled/delayed/in_air/landed/cancelled), gate info,
@@ -115,11 +126,12 @@ def get_flight_status(flight_number: str) -> dict | None:
     Args:
         flight_number: The flight number (e.g. "UA194", "BA930").
     """
-    return flighty.get_flight_status(flight_number)
+    status = flighty.get_flight_status(flight_number)
+    return formatting.format_flight_status(status)
 
 
 @mcp.tool()
-def get_delay_forecast(flight_number: str) -> dict | None:
+def get_delay_forecast(flight_number: str) -> str:
     """Get historical delay statistics for a flight number.
 
     Shows the percentage breakdown of early, on-time, late (15/30/45+ min),
@@ -128,33 +140,36 @@ def get_delay_forecast(flight_number: str) -> dict | None:
     Args:
         flight_number: The flight number (e.g. "UA194").
     """
-    return flighty.get_delay_forecast(flight_number)
+    forecast = flighty.get_delay_forecast(flight_number)
+    return formatting.format_delay_forecast(forecast)
 
 
 @mcp.tool()
-def search_airports(query: str, limit: int = 10) -> list[dict]:
+def search_airports(query: str, limit: int = 10) -> str:
     """Search airports by IATA/ICAO code, city, or name.
 
     Args:
         query: Search term (e.g. "SFO", "San Francisco", "Heathrow").
         limit: Maximum number of results (default 10).
     """
-    return flighty.search_airports(query, limit=limit)
+    airports = flighty.search_airports(query, limit=limit)
+    return formatting.format_airports(airports)
 
 
 @mcp.tool()
-def search_airlines(query: str, limit: int = 10) -> list[dict]:
+def search_airlines(query: str, limit: int = 10) -> str:
     """Search airlines by IATA/ICAO code, name, or alliance.
 
     Args:
         query: Search term (e.g. "UA", "United", "Star Alliance").
         limit: Maximum number of results (default 10).
     """
-    return flighty.search_airlines(query, limit=limit)
+    airlines = flighty.search_airlines(query, limit=limit)
+    return formatting.format_airlines(airlines)
 
 
 @mcp.tool()
-def get_flight_stats(year: int | None = None) -> dict:
+def get_flight_stats(year: int | None = None) -> str:
     """Get aggregate statistics about your flights.
 
     Returns total flights, distance traveled, unique airports/airlines,
@@ -163,7 +178,8 @@ def get_flight_stats(year: int | None = None) -> dict:
     Args:
         year: Filter stats to a specific year (e.g. 2025). Omit for all-time stats.
     """
-    return flighty.get_flight_stats(year=year)
+    stats = flighty.get_flight_stats(year=year)
+    return formatting.format_flight_stats(stats)
 
 
 @mcp.tool()
@@ -177,7 +193,7 @@ def add_flight(
     seat_number: str | None = None,
     cabin_class: str | None = None,
     booking_reference: str | None = None,
-) -> dict:
+) -> str:
     """Add a flight to Flighty by flight code and date.
 
     The airline is automatically detected from the flight code prefix.
@@ -195,7 +211,7 @@ def add_flight(
         cabin_class: Optional cabin class (e.g. "economy", "business", "first").
         booking_reference: Optional PNR/booking reference code.
     """
-    return flighty.add_flight(
+    result = flighty.add_flight(
         flight_code=flight_code,
         date=date,
         departure_airport=departure_airport,
@@ -206,12 +222,17 @@ def add_flight(
         cabin_class=cabin_class,
         booking_reference=booking_reference,
     )
+    return formatting.format_added_flight(result)
 
 
 @mcp.tool()
-def get_connections() -> list[dict]:
-    """Get flight connections (layovers) showing connecting flights and layover duration."""
-    return flighty.get_connections()
+def get_connections() -> str:
+    """Get flight connections (layovers) showing connecting flights and layover duration.
+
+    Connections are sorted chronologically (earliest departure first).
+    """
+    connections = flighty.get_connections()
+    return formatting.format_connections(connections)
 
 
 if __name__ == "__main__":
