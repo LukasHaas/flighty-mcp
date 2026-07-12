@@ -89,6 +89,34 @@ def _arrival_weather_column() -> str:
     return _ARRIVAL_WEATHER_CANDIDATES[0]
 
 
+@lru_cache(maxsize=1)
+def _archive_is_automatic() -> bool:
+    """Detect whether this Flighty version auto-archives past flights.
+
+    Older Flighty versions set UserFlight.isArchived = 1 on every flight once
+    it has flown, so treating "archived" as "hidden by the user" would exclude
+    all past flights. Newer versions only set the flag when the user manually
+    archives a flight. Heuristic: if essentially all past flights are archived,
+    archiving is automatic and the flag should not be used as a filter.
+    """
+    conn = _get_db()
+    try:
+        now = int(datetime.now(timezone.utc).timestamp())
+        past_total, past_archived = conn.execute(
+            """
+            SELECT COUNT(*), SUM(CASE WHEN uf.isArchived = 1 THEN 1 ELSE 0 END)
+            FROM UserFlight uf
+            JOIN Flight f ON uf.flightId = f.id
+            WHERE uf.deleted IS NULL AND f.deleted IS NULL
+              AND f.departureScheduleGateOriginal < ?
+            """,
+            [now],
+        ).fetchone()
+    finally:
+        conn.close()
+    return bool(past_total) and (past_archived or 0) / past_total >= 0.9
+
+
 def _flight_base_query() -> str:
     return _FLIGHT_BASE_QUERY_TEMPLATE.format(
         arrival_weather_col=_arrival_weather_column()
@@ -178,7 +206,7 @@ def list_flights(
     query = _flight_base_query() + " AND uf.userId = ?"
     params: list[Any] = [owner_id]
 
-    if not include_archived:
+    if not include_archived and not _archive_is_automatic():
         query += " AND uf.isArchived = 0"
 
     now = int(datetime.now(timezone.utc).timestamp())
@@ -451,8 +479,12 @@ def search_airlines(query: str, limit: int = 10) -> list[dict[str, Any]]:
 def get_flight_stats(year: int | None = None) -> dict[str, Any]:
     """Get aggregate statistics about the user's flights."""
     conn = _get_db()
-    where = "WHERE uf.deleted IS NULL AND f.deleted IS NULL AND uf.isArchived = 0"
-    params: list[Any] = []
+    owner_id = _get_owner_user_id(conn)
+    where = "WHERE uf.deleted IS NULL AND f.deleted IS NULL AND uf.userId = ?"
+    params: list[Any] = [owner_id]
+
+    if not _archive_is_automatic():
+        where += " AND uf.isArchived = 0"
 
     if year:
         start = int(datetime(year, 1, 1, tzinfo=timezone.utc).timestamp())
