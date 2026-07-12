@@ -18,6 +18,14 @@ DEFAULT_DB_PATH = os.path.expanduser(
 DB_PATH = os.environ.get("FLIGHTY_DB_PATH", DEFAULT_DB_PATH)
 AIRLABS_API_KEY = os.environ.get("AIRLABS_API_KEY", "")
 
+# The Flighty app usually has the database open while running. Wait this long
+# (in milliseconds) for its write lock to clear before giving up, instead of
+# failing instantly with "database is locked". Tunable via env.
+try:
+    BUSY_TIMEOUT_MS = int(os.environ.get("FLIGHTY_BUSY_TIMEOUT_MS", "5000"))
+except ValueError:
+    BUSY_TIMEOUT_MS = 5000
+
 
 def _get_db(readonly: bool = True) -> sqlite3.Connection:
     if not os.path.exists(DB_PATH):
@@ -28,6 +36,10 @@ def _get_db(readonly: bool = True) -> sqlite3.Connection:
     mode = "ro" if readonly else "rw"
     conn = sqlite3.connect(f"file:{DB_PATH}?mode={mode}", uri=True)
     conn.row_factory = sqlite3.Row
+    if not readonly:
+        # Only the write path contends with the running Flighty app; give SQLite
+        # up to BUSY_TIMEOUT_MS to acquire the lock rather than erroring at once.
+        conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     return conn
 
 
@@ -811,6 +823,14 @@ def add_flight(
             "booking_reference": booking_reference,
             "status": "created",
         }
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e).lower():
+            raise RuntimeError(
+                "The Flighty database is locked, most likely because the Flighty "
+                "app has it open. Close the Flighty app (or wait a moment) and try "
+                "again. Set FLIGHTY_BUSY_TIMEOUT_MS to wait longer for the lock."
+            ) from e
+        raise
     finally:
         conn.close()
 
