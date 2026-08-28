@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+import unicodedata
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -28,7 +29,18 @@ def _get_db(readonly: bool = True) -> sqlite3.Connection:
     mode = "ro" if readonly else "rw"
     conn = sqlite3.connect(f"file:{DB_PATH}?mode={mode}", uri=True)
     conn.row_factory = sqlite3.Row
+    # Airport/airline names are stored accented ("Zürich"), but callers type
+    # plain ASCII ("Zurich"). Expose folding to SQL so LIKE matches both.
+    conn.create_function("unaccent", 1, _strip_accents, deterministic=True)
     return conn
+
+
+def _strip_accents(value: str | None) -> str | None:
+    """Fold accented characters to ASCII ('Zürich' -> 'Zurich')."""
+    if value is None:
+        return None
+    decomposed = unicodedata.normalize("NFD", str(value))
+    return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
 
 
 def _ts_to_iso(ts: int | None) -> str | None:
@@ -63,6 +75,12 @@ def _build_flight_dict(row: sqlite3.Row) -> dict[str, Any]:
     ]:
         if key in d and d[key] is not None:
             d[key] = _ts_to_iso(d[key])
+    # The DB stores the bare number ("724"); expose the full code ("LX724") too,
+    # since that is what users and tool docstrings refer to.
+    number = d.get("flight_number")
+    iata = d.get("airline_iata")
+    if number:
+        d["flight_code"] = f"{iata}{number}" if iata else str(number)
     return d
 
 
@@ -278,9 +296,15 @@ def get_flight(flight_id: str | None = None, flight_number: str | None = None) -
         query += " AND f.id = ?"
         params = [flight_id]
     elif flight_number:
-        query += " AND UPPER(REPLACE(f.number, ' ', '')) = UPPER(REPLACE(?, ' ', ''))"
+        # Flighty stores the bare number ("724"), but callers pass the full
+        # code ("LX724"). Match either form.
+        wanted = flight_number.strip().upper().replace("-", "").replace(" ", "")
+        query += (
+            " AND (UPPER(al.iata) || UPPER(REPLACE(f.number, ' ', '')) = ?"
+            " OR UPPER(REPLACE(f.number, ' ', '')) = ?)"
+        )
         query += " ORDER BY f.departureScheduleGateOriginal DESC LIMIT 1"
-        params = [flight_number]
+        params = [wanted, wanted]
     else:
         return None
 
@@ -303,13 +327,22 @@ def search_flights(
     params: list[Any] = []
 
     if airline:
-        query += " AND (UPPER(al.iata) = UPPER(?) OR UPPER(al.name) LIKE UPPER(?))"
+        query += (
+            " AND (UPPER(al.iata) = UPPER(?)"
+            " OR unaccent(UPPER(al.name)) LIKE unaccent(UPPER(?)))"
+        )
         params.extend([airline, f"%{airline}%"])
     if departure_airport:
-        query += " AND (UPPER(dep.iata) = UPPER(?) OR UPPER(dep.city) LIKE UPPER(?))"
+        query += (
+            " AND (UPPER(dep.iata) = UPPER(?)"
+            " OR unaccent(UPPER(dep.city)) LIKE unaccent(UPPER(?)))"
+        )
         params.extend([departure_airport, f"%{departure_airport}%"])
     if arrival_airport:
-        query += " AND (UPPER(arr.iata) = UPPER(?) OR UPPER(arr.city) LIKE UPPER(?))"
+        query += (
+            " AND (UPPER(arr.iata) = UPPER(?)"
+            " OR unaccent(UPPER(arr.city)) LIKE unaccent(UPPER(?)))"
+        )
         params.extend([arrival_airport, f"%{arrival_airport}%"])
     if after:
         ts = int(datetime.fromisoformat(after).timestamp())
@@ -370,7 +403,7 @@ def get_flight_status(flight_number: str) -> dict[str, Any] | None:
         status = "scheduled"
 
     return {
-        "flight_number": flight["flight_number"],
+        "flight_number": flight.get("flight_code") or flight["flight_number"],
         "status": status,
         "is_cancelled": flight["is_cancelled"],
         "departure_airport": flight["departure_airport_iata"],
@@ -405,12 +438,12 @@ def get_delay_forecast(flight_number: str) -> dict[str, Any] | None:
     obs = flight.get("delay_forecast_observations") or 0
     if obs == 0:
         return {
-            "flight_number": flight["flight_number"],
+            "flight_number": flight.get("flight_code") or flight["flight_number"],
             "message": "No delay forecast data available for this flight.",
         }
 
     return {
-        "flight_number": flight["flight_number"],
+        "flight_number": flight.get("flight_code") or flight["flight_number"],
         "route": f"{flight['departure_airport_iata']} -> {flight['arrival_airport_iata']}",
         "observations": obs,
         "mean_delay_minutes": flight.get("delay_forecast_mean_min"),
@@ -440,8 +473,8 @@ def search_airports(query: str, limit: int = 10) -> list[dict[str, Any]]:
         WHERE deleted IS NULL
           AND (UPPER(iata) = UPPER(?)
                OR UPPER(icao) = UPPER(?)
-               OR UPPER(name) LIKE UPPER(?)
-               OR UPPER(city) LIKE UPPER(?))
+               OR unaccent(UPPER(name)) LIKE unaccent(UPPER(?))
+               OR unaccent(UPPER(city)) LIKE unaccent(UPPER(?)))
         ORDER BY relevance DESC
         LIMIT ?
         """,
@@ -461,8 +494,8 @@ def search_airlines(query: str, limit: int = 10) -> list[dict[str, Any]]:
         WHERE deleted IS NULL
           AND (UPPER(iata) = UPPER(?)
                OR UPPER(icao) = UPPER(?)
-               OR UPPER(name) LIKE UPPER(?)
-               OR UPPER(alliance) LIKE UPPER(?))
+               OR unaccent(UPPER(name)) LIKE unaccent(UPPER(?))
+               OR unaccent(UPPER(alliance)) LIKE unaccent(UPPER(?)))
         ORDER BY relevance DESC
         LIMIT ?
         """,
@@ -815,32 +848,36 @@ def add_flight(
         conn.close()
 
 
-def get_connections() -> list[dict[str, Any]]:
+def get_connections(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
     """Get flight connections (layovers) for the user."""
     conn = _get_db()
     rows = conn.execute(
         """
         SELECT
             c.id,
-            f1.number AS departing_flight,
-            dep1.iata AS from_airport,
-            arr1.iata AS connection_airport,
-            f2.number AS arriving_flight,
-            arr2.iata AS to_airport,
-            f1.arrivalScheduleGateOriginal AS arrival_time,
-            f2.departureScheduleGateOriginal AS departure_time,
-            c.mctMinutes AS min_connection_time_min,
-            wait.name AS connection_airport_name
+            COALESCE(al_in.iata, '') || f_in.number AS inbound_flight,
+            dep_in.iata AS from_airport,
+            wait.iata AS connection_airport,
+            wait.name AS connection_airport_name,
+            wait.timeZoneIdentifier AS connection_timezone,
+            COALESCE(al_out.iata, '') || f_out.number AS onward_flight,
+            arr_out.iata AS to_airport,
+            f_in.arrivalScheduleGateOriginal AS arrival_time,
+            f_out.departureScheduleGateOriginal AS departure_time,
+            c.mctMinutes AS min_connection_time_min
         FROM Connection c
-        JOIN Flight f1 ON c.departingFlightId = f1.id
-        JOIN Flight f2 ON c.arrivingFlightId = f2.id
-        JOIN Airport dep1 ON f1.departureAirportId = dep1.id
-        JOIN Airport arr1 ON f1.scheduledArrivalAirportId = arr1.id
-        JOIN Airport arr2 ON f2.scheduledArrivalAirportId = arr2.id
+        JOIN Flight f_in ON c.arrivingFlightId = f_in.id
+        JOIN Flight f_out ON c.departingFlightId = f_out.id
+        JOIN Airport dep_in ON f_in.departureAirportId = dep_in.id
+        JOIN Airport arr_out ON f_out.scheduledArrivalAirportId = arr_out.id
         JOIN Airport wait ON c.waitingAirportId = wait.id
+        LEFT JOIN Airline al_in ON f_in.airlineId = al_in.id
+        LEFT JOIN Airline al_out ON f_out.airlineId = al_out.id
         WHERE c.deleted IS NULL
-        ORDER BY f1.departureScheduleGateOriginal ASC
+        ORDER BY f_in.departureScheduleGateOriginal ASC
+        LIMIT ? OFFSET ?
         """,
+        [limit, offset],
     ).fetchall()
     conn.close()
 
