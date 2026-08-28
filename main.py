@@ -8,7 +8,7 @@ import formatting
 mcp = FastMCP("flighty")
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def list_flights(
     upcoming_only: bool = False,
     past_only: bool = False,
@@ -34,10 +34,10 @@ def list_flights(
         limit=limit,
         offset=offset,
     )
-    return formatting.format_flight_list(flights)
+    return formatting.format_flight_list(flights, limit=limit, offset=offset)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def list_friend_flights(
     friend_name: str | None = None,
     upcoming_only: bool = False,
@@ -63,10 +63,12 @@ def list_friend_flights(
         limit=limit,
         offset=offset,
     )
-    return formatting.format_flight_list(flights, empty_message="No friend flights found.")
+    return formatting.format_flight_list(
+        flights, empty_message="No friend flights found.", limit=limit, offset=offset
+    )
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_flight(
     flight_id: str | None = None,
     flight_number: str | None = None,
@@ -84,7 +86,7 @@ def get_flight(
     return formatting.format_flight_details(flight)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def search_flights(
     airline: str | None = None,
     departure_airport: str | None = None,
@@ -113,10 +115,12 @@ def search_flights(
         before=before,
         limit=limit,
     )
-    return formatting.format_flight_list(flights, empty_message="No flights matched your search.")
+    return formatting.format_flight_list(
+        flights, empty_message="No flights matched your search.", limit=limit
+    )
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_flight_status(flight_number: str) -> str:
     """Get the current status and delay information for a flight.
 
@@ -130,7 +134,7 @@ def get_flight_status(flight_number: str) -> str:
     return formatting.format_flight_status(status)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_delay_forecast(flight_number: str) -> str:
     """Get historical delay statistics for a flight number.
 
@@ -144,7 +148,7 @@ def get_delay_forecast(flight_number: str) -> str:
     return formatting.format_delay_forecast(forecast)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def search_airports(query: str, limit: int = 10) -> str:
     """Search airports by IATA/ICAO code, city, or name.
 
@@ -156,7 +160,7 @@ def search_airports(query: str, limit: int = 10) -> str:
     return formatting.format_airports(airports)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def search_airlines(query: str, limit: int = 10) -> str:
     """Search airlines by IATA/ICAO code, name, or alliance.
 
@@ -168,7 +172,7 @@ def search_airlines(query: str, limit: int = 10) -> str:
     return formatting.format_airlines(airlines)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def get_flight_stats(year: int | None = None) -> str:
     """Get aggregate statistics about your flights.
 
@@ -182,7 +186,7 @@ def get_flight_stats(year: int | None = None) -> str:
     return formatting.format_flight_stats(stats)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def add_flight(
     flight_code: str,
     date: str,
@@ -225,14 +229,18 @@ def add_flight(
     return formatting.format_added_flight(result)
 
 
-@mcp.tool()
-def get_connections() -> str:
+@mcp.tool(structured_output=False)
+def get_connections(limit: int = 50, offset: int = 0) -> str:
     """Get flight connections (layovers) showing connecting flights and layover duration.
 
     Connections are sorted chronologically (earliest departure first).
+
+    Args:
+        limit: Maximum number of connections to return (default 50).
+        offset: Number of connections to skip for pagination.
     """
-    connections = flighty.get_connections()
-    return formatting.format_connections(connections)
+    connections = flighty.get_connections(limit=limit, offset=offset)
+    return formatting.format_connections(connections, limit=limit, offset=offset)
 
 
 if __name__ == "__main__":

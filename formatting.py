@@ -51,6 +51,27 @@ def _fmt_duration(minutes: int) -> str:
     return f"{mins}m"
 
 
+def _flight_code(flight: dict[str, Any]) -> str:
+    """Full flight code, e.g. 'LX724' rather than the bare '724'."""
+    code = flight.get("flight_code")
+    if code:
+        return str(code)
+    number = flight.get("flight_number")
+    iata = flight.get("airline_iata")
+    if number and iata:
+        return f"{iata}{number}"
+    return str(number) if number else "Unknown flight"
+
+
+def _aircraft_model(flight: dict[str, Any]) -> str | None:
+    """Aircraft model without repeating the manufacturer ('Airbus Airbus A320')."""
+    manufacturer = flight.get("aircraft_manufacturer")
+    model = flight.get("aircraft_model")
+    if model and manufacturer and model.lower().startswith(manufacturer.lower()):
+        return model
+    return " ".join(p for p in [manufacturer, model] if p) or None
+
+
 def _schedule_line(label: str, flight: dict[str, Any], side: str, tz_name: str | None) -> str | None:
     """Build a 'Departs: ...' / 'Arrives: ...' line with delay info and gate."""
     orig = flight.get(f"{side}ScheduleGateOriginal")
@@ -86,7 +107,7 @@ def _flight_block(flight: dict[str, Any]) -> str:
     arr_tz = flight.get("arrival_timezone")
 
     header = (
-        f"{flight.get('flight_number')} — {flight.get('airline_name')} · "
+        f"{_flight_code(flight)} — {flight.get('airline_name')} · "
         f"{flight.get('departure_airport_iata')} → {flight.get('arrival_airport_iata')}"
     )
     friend = flight.get("friend_name")
@@ -123,7 +144,22 @@ def _flight_block(flight: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_flight_list(flights: list[dict[str, Any]], empty_message: str = "No flights found.") -> str:
+def _more_results_note(count: int, limit: int | None, offset: int = 0) -> str:
+    """Warn that the page is full, so more results may exist."""
+    if limit is None or count < limit:
+        return ""
+    return (
+        f"\n\n(Showing {count} results starting at offset {offset}. "
+        f"More may exist — call again with offset={offset + count}.)"
+    )
+
+
+def format_flight_list(
+    flights: list[dict[str, Any]],
+    empty_message: str = "No flights found.",
+    limit: int | None = None,
+    offset: int = 0,
+) -> str:
     """Render a list of flights as numbered text blocks."""
     if not flights:
         return empty_message
@@ -137,7 +173,7 @@ def format_flight_list(flights: list[dict[str, Any]], empty_message: str = "No f
         if rest:
             numbered += "\n" + rest
         blocks.append(numbered)
-    return header + "\n\n" + "\n\n".join(blocks)
+    return header + "\n\n" + "\n\n".join(blocks) + _more_results_note(count, limit, offset)
 
 
 def format_flight_details(flight: dict[str, Any] | None) -> str:
@@ -148,10 +184,8 @@ def format_flight_details(flight: dict[str, Any] | None) -> str:
     lines = [_flight_block(flight)]
 
     aircraft_bits = []
-    if flight.get("aircraft_manufacturer") or flight.get("aircraft_model"):
-        model = " ".join(
-            p for p in [flight.get("aircraft_manufacturer"), flight.get("aircraft_model")] if p
-        )
+    model = _aircraft_model(flight)
+    if model:
         aircraft_bits.append(model)
     if flight.get("tail_number"):
         aircraft_bits.append(f"tail number {flight['tail_number']}")
@@ -416,29 +450,41 @@ def format_added_flight(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_connections(connections: list[dict[str, Any]]) -> str:
+def format_connections(
+    connections: list[dict[str, Any]], limit: int | None = None, offset: int = 0
+) -> str:
     """Render flight connections (layovers) as text."""
     if not connections:
         return "No flight connections found."
     blocks = []
     for i, c in enumerate(connections, 1):
+        hub = c.get("connection_airport")
         lines = [
-            f"{i}. {c.get('departing_flight')} ({c.get('from_airport')} → "
-            f"{c.get('connection_airport')}) connecting to {c.get('arriving_flight')} "
-            f"({c.get('connection_airport')} → {c.get('to_airport')})"
+            f"{i}. {c.get('from_airport')} → {hub} → {c.get('to_airport')}: "
+            f"{c.get('inbound_flight')} then {c.get('onward_flight')}"
         ]
         layover = c.get("layover_minutes")
-        airport_name = c.get("connection_airport_name") or c.get("connection_airport")
-        if layover is not None:
-            lines.append(f"   Layover at {airport_name}: {_fmt_duration(layover)}")
-        else:
+        airport_name = c.get("connection_airport_name") or hub
+        tz = c.get("connection_timezone")
+        if layover is None:
             lines.append(f"   Layover at {airport_name}")
+        elif layover < 0:
+            lines.append(
+                f"   Layover at {airport_name}: overlapping schedules "
+                f"({_fmt_duration(layover)} before the inbound flight lands)"
+            )
+        else:
+            lines.append(f"   Layover at {airport_name}: {_fmt_duration(layover)}")
         if c.get("arrival_time"):
-            lines.append(f"   Arrive: {_fmt_dt(c['arrival_time'])}")
+            lines.append(f"   Inbound arrives: {_fmt_dt(c['arrival_time'], tz)}")
         if c.get("departure_time"):
-            lines.append(f"   Depart: {_fmt_dt(c['departure_time'])}")
+            lines.append(f"   Onward departs: {_fmt_dt(c['departure_time'], tz)}")
         if c.get("min_connection_time_min"):
             lines.append(f"   Minimum connection time: {c['min_connection_time_min']} min")
         blocks.append("\n".join(lines))
     count = len(connections)
-    return f"Found {count} connection{'s' if count != 1 else ''}:\n\n" + "\n\n".join(blocks)
+    return (
+        f"Found {count} connection{'s' if count != 1 else ''}:\n\n"
+        + "\n\n".join(blocks)
+        + _more_results_note(count, limit, offset)
+    )
