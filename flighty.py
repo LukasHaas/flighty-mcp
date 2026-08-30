@@ -645,6 +645,19 @@ def _airport_timezone(airport: dict[str, Any]) -> tzinfo:
     return timezone.utc
 
 
+def _get_owner_account_id(conn: sqlite3.Connection) -> int:
+    """Get the local account ID used by UserFlight and Ticket rows.
+
+    Newer Flighty versions added a NOT NULL accountId to both tables, part of
+    their composite primary keys. The local database only ever holds one
+    account, so mirror whatever existing rows use rather than assuming 0.
+    """
+    row = conn.execute(
+        "SELECT accountId FROM UserFlight GROUP BY accountId ORDER BY COUNT(*) DESC LIMIT 1"
+    ).fetchone()
+    return row[0] if row else 0
+
+
 def _get_owner_user_id(conn: sqlite3.Connection) -> str:
     """Get the local Flighty owner's user ID.
 
@@ -756,6 +769,7 @@ def add_flight(
         dep_airport = _lookup_airport(conn, departure_airport)
         arr_airport = _lookup_airport(conn, arrival_airport)
         user_id = _get_owner_user_id(conn)
+        account_id = _get_owner_account_id(conn)
 
         # Parse departure datetime in the departure airport's local timezone.
         # Times are entered as local wall-clock times, so they must be localized
@@ -807,11 +821,11 @@ def add_flight(
         conn.execute(
             """
             INSERT INTO UserFlight (
-                userId, flightId, isRandom, isProUpgrade, isMyFlight,
+                accountId, userId, flightId, isRandom, isProUpgrade, isMyFlight,
                 isArchived, importSource, lastUpdated, created
-            ) VALUES (?, ?, 0, 0, 1, 0, 'MCP', ?, ?)
+            ) VALUES (?, ?, ?, 0, 0, 1, 0, 'MCP', ?, ?)
             """,
-            [user_id, flight_id, now_ts, now_ts],
+            [account_id, user_id, flight_id, now_ts, now_ts],
         )
 
         # Optionally insert Ticket row
@@ -819,11 +833,14 @@ def add_flight(
             conn.execute(
                 """
                 INSERT INTO Ticket (
-                    userId, flightId, seatNumber, seatPosition, cabinClass,
+                    accountId, userId, flightId, seatNumber, seatPosition, cabinClass,
                     pnr, lastUpdated
-                ) VALUES (?, ?, ?, NULL, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
                 """,
-                [user_id, flight_id, seat_number, cabin_class, booking_reference, now_ts],
+                [
+                    account_id, user_id, flight_id, seat_number, cabin_class,
+                    booking_reference, now_ts,
+                ],
             )
 
         conn.commit()
