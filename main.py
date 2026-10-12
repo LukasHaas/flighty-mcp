@@ -1,11 +1,11 @@
 """Flighty MCP Server - Access your local Flighty flight data."""
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 import flighty
 import formatting
 
-mcp = FastMCP("flighty")
+mcp = MCPServer("flighty")
 
 
 @mcp.tool(structured_output=False)
