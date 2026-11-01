@@ -17,6 +17,9 @@ def list_flights(
 ) -> list[dict]:
     """List your own flights from Flighty (excludes friends' flights).
 
+    Upcoming flights come soonest first, others newest first. When more flights
+    match than fit in limit, the last item is a {"note": ...} saying so.
+
     Args:
         upcoming_only: Only show flights that haven't departed yet.
         past_only: Only show flights that have already departed.
@@ -183,6 +186,8 @@ def add_flight(
     The airline is automatically detected from the flight code prefix.
     If departure/arrival airports are not provided and AIRLABS_API_KEY is set,
     they are automatically looked up via the AirLabs API.
+    If you already track the same flight number within a day of that date, nothing
+    is added and the existing flight comes back with status "exists".
 
     Args:
         flight_code: Flight code (e.g. "UA194", "BA930", "LH400").
